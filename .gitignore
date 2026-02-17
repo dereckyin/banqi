@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+runs/
+
+models/*.pt
+models/league.json
+!models/.gitkeep

@@ -1,0 +1,54 @@
+{
+  "iterations": 200,
+  "games_per_iteration": 32,
+  "training_steps_per_iteration": 128,
+  "batch_size": 128,
+  "target_sync_interval": 200,
+  "gradient_clip_norm": 5.0,
+  "checkpoint_every_steps": 500,
+  "save_every_iteration": true,
+  "learning_rate_gamma": 0.9995,
+  "seed": 42,
+  "deterministic": true,
+  "tensorboard": false,
+  "dqn": {
+    "learning_rate": 0.001,
+    "gamma": 0.99,
+    "epsilon_start": 1.0,
+    "epsilon_end": 0.05,
+    "epsilon_decay": 0.9995
+  },
+  "replay_buffer": {
+    "capacity": 100000,
+    "prioritized": true,
+    "alpha": 0.6,
+    "beta_start": 0.4,
+    "beta_increment": 0.0001
+  },
+  "self_play": {
+    "max_plies": 220,
+    "no_progress_limit": 30,
+    "parallel_workers": 1,
+    "win_reward": 1.2,
+    "loss_reward": -1.2,
+    "capture_bonus": 0.03,
+    "lose_piece_penalty": 0.02,
+    "draw_penalty": 0.25,
+    "step_penalty": 0.002,
+    "base_seed": 1000,
+    "log_every_games": 8
+  },
+  "evaluation": {
+    "games": 200,
+    "promotion_win_rate": 0.55,
+    "parallel_workers": 1
+  },
+  "league": {
+    "max_versions": 8,
+    "sample_best_probability": 0.8
+  },
+  "output": {
+    "model_dir": "models",
+    "log_dir": "runs/banqi"
+  }
+}
