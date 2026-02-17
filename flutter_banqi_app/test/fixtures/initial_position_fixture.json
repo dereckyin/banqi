@@ -1,0 +1,8 @@
+{
+  "name": "initial_position",
+  "rows": 4,
+  "cols": 8,
+  "expected_legal_moves": 32,
+  "expected_flip_moves": 32,
+  "expected_current_turn": "red"
+}
