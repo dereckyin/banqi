@@ -120,3 +120,10 @@ trainer.run_training_loop()
 ## Deterministic behavior
 
 Use `seed` arguments in `Board`, `MinimaxAI`, and `DQNAI` constructors for reproducible runs.
+
+## Privacy Policy
+
+- Traditional Chinese privacy policy page:
+  - `docs/privacy-policy.html`
+- After enabling GitHub Pages for this repository, the public URL will be:
+  - `https://dereckyin.github.io/banqi/privacy-policy.html`

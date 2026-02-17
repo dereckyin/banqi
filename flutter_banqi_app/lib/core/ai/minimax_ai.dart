@@ -94,6 +94,7 @@ class MinimaxAI implements BaseAI {
     this.flipPenalty = 2.5,
     this.maxBranching = 14,
     this.quiescenceDepth = 1,
+    this.seeDepth = 6,
     this.lightweightEvaluation = true,
     EvaluationWeights? evaluationWeights,
   }) : _rng = Random(seed),
@@ -104,6 +105,7 @@ class MinimaxAI implements BaseAI {
   final double flipPenalty;
   final int maxBranching;
   final int quiescenceDepth;
+  final int seeDepth;
   final bool lightweightEvaluation;
   final Random _rng;
   EvaluationWeights _weights;
@@ -144,7 +146,14 @@ class MinimaxAI implements BaseAI {
     final safePreferred = ordered
         .where((m) => !_isImmediateRecaptureTrap(board, m, perspective))
         .toList();
-    final candidates = safePreferred.isNotEmpty ? safePreferred : ordered;
+    var candidates = safePreferred.isNotEmpty ? safePreferred : ordered;
+    final hardEscapeMoves = ordered
+        .where((m) => _isHardEscapeForThreatenedCorePiece(board, m, perspective))
+        .toList();
+    if (hardEscapeMoves.isNotEmpty) {
+      final forcedEscapes = candidates.where((m) => hardEscapeMoves.contains(m)).toList();
+      candidates = forcedEscapes.isNotEmpty ? forcedEscapes : hardEscapeMoves;
+    }
     var bestScore = double.negativeInfinity;
     var bestBonus = double.negativeInfinity;
     final bestMoves = <BanqiMove>[];
@@ -160,11 +169,19 @@ class MinimaxAI implements BaseAI {
         perspective,
       );
       final risk = _recaptureRiskAdjustment(board, move, perspective);
+      final see = _seeForCurrentTurnCapture(board, move);
       final preservePenalty = _corePieceMovePenalty(board, move, perspective);
       final escapeBias = _threatEscapeBias(board, move, perspective);
       final bonus = _immediateBonus(board, move);
       final chaseBias = _endgameChaseMoveBias(board, move, perspective);
-      final moveScore = value + risk + escapeBias + (0.25 * bonus) + chaseBias - preservePenalty;
+      final moveScore =
+          value +
+          risk +
+          (0.20 * see) +
+          escapeBias +
+          (0.25 * bonus) +
+          chaseBias -
+          preservePenalty;
       if (moveScore > bestScore || (moveScore == bestScore && bonus > bestBonus)) {
         bestScore = moveScore;
         bestBonus = bonus;
@@ -276,10 +293,7 @@ class MinimaxAI implements BaseAI {
       beta = min(beta, standPat);
     }
 
-    final captures = _orderMoves(
-      board,
-      board.legalMoves().where((m) => _isCaptureMove(board, m)).toList(),
-    ).take(8);
+    final captures = _quiescenceCaptures(board, perspective, maximizing).take(8);
     if (captures.isEmpty) {
       return standPat;
     }
@@ -510,6 +524,7 @@ class MinimaxAI implements BaseAI {
     final netThreat = max(1, enemyThreats - allyDefenders);
     final movedValue = landedPiece.value.toDouble();
     final capturedValue = board.cell(move.to).piece?.value.toDouble() ?? 0.0;
+    final see = _seeForCurrentTurnCapture(board, move);
     final protectionTier = _protectionWeightByRank(landedPiece.rank);
     final immediateTrade = capturedValue - movedValue;
     final highValuePenalty = movedValue >= 45 ? 0.35 * movedValue * protectionTier : 0.0;
@@ -521,7 +536,15 @@ class MinimaxAI implements BaseAI {
         protectionTier;
     final defenderRelief = 0.05 * movedValue * allyDefenders * (2.0 - min(1.6, protectionTier));
     final gainReward = 0.08 * capturedValue;
-    return gainReward - threatPenalty - highValuePenalty - unfavorableTradePenalty + defenderRelief;
+    final seeAdjustment = see >= 0
+        ? 0.12 * see
+        : -0.30 * see.abs() * protectionTier;
+    return gainReward -
+        threatPenalty -
+        highValuePenalty -
+        unfavorableTradePenalty +
+        defenderRelief +
+        seeAdjustment;
   }
 
   bool _isImmediateRecaptureTrap(BoardState board, BanqiMove move, Side perspective) {
@@ -554,9 +577,10 @@ class MinimaxAI implements BaseAI {
 
     final movedValue = moving.value.toDouble();
     final capturedValue = target.value.toDouble();
+    final see = _seeForCurrentTurnCapture(board, move);
     final tradeIsGood = capturedValue >= (0.9 * movedValue);
-    // If net threatened and trade is not clearly favorable, treat as trap.
-    return !tradeIsGood;
+    // If net threatened and exchange is not favorable under SEE, treat as trap.
+    return see < 0 && !tradeIsGood;
   }
 
   double _corePieceMovePenalty(BoardState board, BanqiMove move, Side perspective) {
@@ -800,6 +824,37 @@ class MinimaxAI implements BaseAI {
     }
   }
 
+  bool _isHardEscapeForThreatenedCorePiece(
+    BoardState board,
+    BanqiMove move,
+    Side perspective,
+  ) {
+    if (move.kind != MoveKind.move || move.from == null) {
+      return false;
+    }
+    final moving = board.cell(move.from!).piece;
+    if (moving == null || moving.side != perspective) {
+      return false;
+    }
+    // Hard rule applies to General/Advisor families only.
+    if (moving.rank != Rank.general && moving.rank != Rank.advisor) {
+      return false;
+    }
+
+    final enemy = perspective.opponent;
+    final beforeThreat =
+        _attackersTo(board, move.from!, enemy) - _attackersTo(board, move.from!, perspective);
+    if (beforeThreat <= 0) {
+      return false;
+    }
+
+    final child = board.clone()..forbidRepetition = false;
+    child.applyMove(move);
+    final afterThreat =
+        _attackersTo(child, move.to, enemy) - _attackersTo(child, move.to, perspective);
+    return afterThreat <= 0;
+  }
+
   double _flipPressure(BoardState board, Side side) {
     final state = board.clone()
       ..forbidRepetition = false
@@ -831,8 +886,122 @@ class MinimaxAI implements BaseAI {
     }
     final target = board.cell(move.to).piece;
     if (target != null) {
-      return 300 + target.value;
+      final see = _seeForCurrentTurnCapture(board, move).round();
+      return 300 + target.value + see;
     }
     return 100;
+  }
+
+  Iterable<BanqiMove> _quiescenceCaptures(
+    BoardState board,
+    Side perspective,
+    bool maximizing,
+  ) {
+    final captures = board.legalMoves().where((m) => _isCaptureMove(board, m));
+    final filtered = captures.where((move) {
+      final see = _seeForCurrentTurnCapture(board, move);
+      final targetValue = board.cell(move.to).piece?.value.toDouble() ?? 0.0;
+      // Keep clearly sound exchanges; still allow some tactical shots on high-value targets.
+      return see >= -6.0 || targetValue >= 40.0;
+    }).toList();
+    filtered.sort(
+      (a, b) => _quiescenceCaptureScore(
+        board,
+        b,
+        perspective,
+        maximizing,
+      ).compareTo(_quiescenceCaptureScore(board, a, perspective, maximizing)),
+    );
+    return filtered;
+  }
+
+  double _quiescenceCaptureScore(
+    BoardState board,
+    BanqiMove move,
+    Side perspective,
+    bool maximizing,
+  ) {
+    final mover = board.currentTurn;
+    final see = _seeForCurrentTurnCapture(board, move);
+    final targetValue = board.cell(move.to).piece?.value.toDouble() ?? 0.0;
+    final signed = mover == perspective ? see : -see;
+    final score = signed + (0.15 * targetValue);
+    return maximizing ? score : -score;
+  }
+
+  double _seeForCurrentTurnCapture(BoardState board, BanqiMove move) {
+    if (!_isCaptureMove(board, move) || move.from == null) {
+      return 0.0;
+    }
+    final target = board.cell(move.to).piece;
+    if (target == null) {
+      return 0.0;
+    }
+    final child = board.clone()..forbidRepetition = false;
+    child.applyMove(move);
+    final replyGain = _seeSequence(
+      child,
+      move.to,
+      board.currentTurn.opponent,
+      max(0, seeDepth - 1),
+    );
+    return target.value.toDouble() - replyGain;
+  }
+
+  double _seeSequence(
+    BoardState board,
+    Position target,
+    Side sideToMove,
+    int remainDepth,
+  ) {
+    if (remainDepth <= 0) {
+      return 0.0;
+    }
+    final capture = _leastValuableCaptureTo(board, target, sideToMove);
+    if (capture == null) {
+      return 0.0;
+    }
+    final captured = board.cell(target).piece;
+    if (captured == null) {
+      return 0.0;
+    }
+
+    final child = board.clone()..forbidRepetition = false;
+    child.applyMove(capture);
+    final continuation = _seeSequence(
+      child,
+      target,
+      sideToMove.opponent,
+      remainDepth - 1,
+    );
+    return max(0.0, captured.value.toDouble() - continuation);
+  }
+
+  BanqiMove? _leastValuableCaptureTo(BoardState board, Position target, Side attacker) {
+    final probe = board.clone()
+      ..forbidRepetition = false
+      ..currentTurn = attacker;
+    BanqiMove? bestMove;
+    var bestAttackerValue = 1 << 30;
+    var bestCapturedValue = -1;
+    for (final move in probe.legalMoves()) {
+      if (move.kind != MoveKind.move || move.from == null || move.to != target) {
+        continue;
+      }
+      final attackerPiece = probe.cell(move.from!).piece;
+      final victimPiece = probe.cell(target).piece;
+      if (attackerPiece == null || victimPiece == null || victimPiece.side == attacker) {
+        continue;
+      }
+      final attackerValue = attackerPiece.value;
+      final victimValue = victimPiece.value;
+      if (attackerValue < bestAttackerValue ||
+          (attackerValue == bestAttackerValue && victimValue > bestCapturedValue)) {
+        bestAttackerValue = attackerValue;
+        bestCapturedValue = victimValue;
+        bestMove = move;
+      }
+    }
+    return bestMove;
   }
 }
