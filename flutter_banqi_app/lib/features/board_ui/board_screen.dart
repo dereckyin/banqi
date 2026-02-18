@@ -53,15 +53,20 @@ class _BoardScreenState extends State<BoardScreen> {
                   ),
                 ),
                 child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      children: [
-                        Expanded(flex: 9, child: _boardPanel()),
-                        const SizedBox(width: 12),
-                        SizedBox(width: 220, child: _sidePanel(terminal)),
-                      ],
-                    ),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final sideWidth = (constraints.maxWidth * 0.20).clamp(150.0, 188.0);
+                      return Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Row(
+                          children: [
+                            Expanded(child: _boardPanel()),
+                            const SizedBox(width: 8),
+                            SizedBox(width: sideWidth, child: _sidePanel(terminal)),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),

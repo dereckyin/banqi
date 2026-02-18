@@ -123,14 +123,30 @@ class MinimaxAI implements BaseAI {
     if (legal.isEmpty) {
       throw StateError('No legal moves available.');
     }
+    final perspective = board.currentTurn;
+    final allCaptures = allLegal.where((m) => _isCaptureMove(board, m)).toList();
+    final allNonCaptures = allLegal.where((m) => !_isCaptureMove(board, m)).toList();
+    final allPieceMoves = allLegal.where((m) => m.kind == MoveKind.move).toList();
+
     if (preferCaptureOverFlip) {
-      final captures = legal.where((m) => _isCaptureMove(board, m)).toList();
-      if (captures.isNotEmpty) {
-        legal = captures;
+      if (allCaptures.isNotEmpty) {
+        // Prefer captures, but do not force obvious recapture traps.
+        final safeCaptures = allCaptures
+            .where((m) => !_isImmediateRecaptureTrap(board, m, perspective))
+            .toList();
+        if (safeCaptures.isNotEmpty) {
+          legal = safeCaptures;
+        } else if (allNonCaptures.isNotEmpty) {
+          legal = allNonCaptures;
+        } else {
+          legal = allCaptures;
+        }
       }
+    } else if (allPieceMoves.isNotEmpty) {
+      // When capture-priority is off, prevent endless flipping once movement is available.
+      legal = allPieceMoves;
     }
 
-    final perspective = board.currentTurn;
     final hasCapture = allLegal.any((m) => _isCaptureMove(board, m));
     final hiddenPieces = _hiddenPieceCount(board);
     var baseDepth = hasCapture ? max(depth, 3) : depth;
@@ -147,8 +163,9 @@ class MinimaxAI implements BaseAI {
         .where((m) => !_isImmediateRecaptureTrap(board, m, perspective))
         .toList();
     var candidates = safePreferred.isNotEmpty ? safePreferred : ordered;
-    final hardEscapeMoves = ordered
+    final hardEscapeMoves = _orderMoves(board, allLegal)
         .where((m) => _isHardEscapeForThreatenedCorePiece(board, m, perspective))
+        .take(maxBranching)
         .toList();
     if (hardEscapeMoves.isNotEmpty) {
       final forcedEscapes = candidates.where((m) => hardEscapeMoves.contains(m)).toList();

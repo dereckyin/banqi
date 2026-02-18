@@ -6,16 +6,27 @@ import 'package:flutter_banqi_app/core/engine/board_state.dart';
 import 'package:flutter_banqi_app/core/engine/types.dart';
 
 void main() {
-  test('minimax prefers adjacent capture over flip', () {
-    final board = BoardState.initial(seed: 1)..forbidRepetition = false;
+  void clearBoard(BoardState board) {
     for (var r = 0; r < BoardState.rows; r++) {
       for (var c = 0; c < BoardState.cols; c++) {
         board.grid[r][c] = const CellState.empty();
+        board.hiddenLayout[r][c] = null;
       }
     }
-    board.pieceBag
-      ..clear()
-      ..add(const Piece(side: Side.black, rank: Rank.soldier));
+    board.pieceBag.clear();
+    board.currentTurn = Side.red;
+    board.noProgressPlies = 0;
+    board.plyCount = 0;
+    board.stateVisits.clear();
+    board.lastNonCaptureChaseTargets[Side.red] = <Position>{};
+    board.lastNonCaptureChaseTargets[Side.black] = <Position>{};
+    board.longChaseStreak[Side.red] = 0;
+    board.longChaseStreak[Side.black] = 0;
+  }
+
+  test('minimax prefers adjacent capture over flip', () {
+    final board = BoardState.initial(seed: 1)..forbidRepetition = false;
+    clearBoard(board);
     board.currentTurn = Side.red;
     board.grid[1][1] = const CellState.revealed(
       Piece(side: Side.red, rank: Rank.chariot),
@@ -24,9 +35,112 @@ void main() {
       Piece(side: Side.black, rank: Rank.soldier),
     );
     board.grid[0][0] = const CellState.hidden();
+    board.hiddenLayout[0][0] = const Piece(side: Side.black, rank: Rank.soldier);
+    board.pieceBag.add(const Piece(side: Side.black, rank: Rank.soldier));
 
     final ai = MinimaxAI(depth: 2, seed: 42);
     final move = ai.chooseMove(board);
     expect(move, const BanqiMove.move(Position(1, 1), Position(1, 2)));
+  });
+
+  test('hard escape rule forces threatened general to a safe square', () {
+    final board = BoardState.initial(seed: 7)..forbidRepetition = false;
+    clearBoard(board);
+    board.currentTurn = Side.red;
+
+    board.grid[1][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.general),
+    );
+    board.grid[1][2] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+    board.grid[0][0] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+
+    final ai = MinimaxAI(depth: 2, seed: 42);
+    final move = ai.chooseMove(board);
+    expect(move, const BanqiMove.move(Position(1, 1), Position(2, 1)));
+  });
+
+  test('regression: avoid trapped high-value capture when safer capture exists', () {
+    final board = BoardState.initial(seed: 8)..forbidRepetition = false;
+    clearBoard(board);
+    board.currentTurn = Side.red;
+
+    // Trap candidate: red general captures black advisor, then black soldier
+    // can immediately recapture the general.
+    board.grid[1][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.general),
+    );
+    board.grid[1][2] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.advisor),
+    );
+    board.grid[1][3] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+
+    // Safer alternative capture.
+    board.grid[2][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.horse),
+    );
+    board.grid[2][2] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+
+    final ai = MinimaxAI(depth: 2, seed: 42);
+    final move = ai.chooseMove(board);
+    expect(move, isNot(const BanqiMove.move(Position(1, 1), Position(1, 2))));
+    expect(move, const BanqiMove.move(Position(2, 1), Position(2, 2)));
+  });
+
+  test('preferCaptureOverFlip does not force trap capture when alternatives exist', () {
+    final board = BoardState.initial(seed: 9)..forbidRepetition = false;
+    clearBoard(board);
+    board.currentTurn = Side.red;
+
+    board.grid[1][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.general),
+    );
+    board.grid[1][2] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.advisor),
+    );
+    board.grid[1][3] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+    board.grid[2][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.horse),
+    );
+    board.grid[0][0] = const CellState.hidden();
+    board.hiddenLayout[0][0] = const Piece(side: Side.red, rank: Rank.soldier);
+    board.pieceBag.add(const Piece(side: Side.red, rank: Rank.soldier));
+
+    final ai = MinimaxAI(depth: 2, seed: 42, preferCaptureOverFlip: true);
+    final move = ai.chooseMove(board);
+    expect(move, isNot(const BanqiMove.move(Position(1, 1), Position(1, 2))));
+  });
+
+  test('when capture priority is off, AI still chooses movement over endless flips', () {
+    final board = BoardState.initial(seed: 10)..forbidRepetition = false;
+    clearBoard(board);
+    board.currentTurn = Side.red;
+
+    board.grid[1][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.horse),
+    );
+    board.grid[1][2] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+    board.grid[0][0] = const CellState.hidden();
+    board.grid[0][1] = const CellState.hidden();
+    board.hiddenLayout[0][0] = const Piece(side: Side.black, rank: Rank.general);
+    board.hiddenLayout[0][1] = const Piece(side: Side.red, rank: Rank.soldier);
+    board.pieceBag
+      ..add(const Piece(side: Side.black, rank: Rank.general))
+      ..add(const Piece(side: Side.red, rank: Rank.soldier));
+
+    final ai = MinimaxAI(depth: 2, seed: 42, preferCaptureOverFlip: false);
+    final move = ai.chooseMove(board);
+    expect(move.kind, MoveKind.move);
   });
 }

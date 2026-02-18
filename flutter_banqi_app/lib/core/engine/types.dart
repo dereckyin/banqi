@@ -20,8 +20,8 @@ const Map<Rank, int> rankStrength = {
 
 const Map<Rank, int> rankValue = {
   Rank.general: 90,
-  Rank.advisor: 20,
-  Rank.elephant: 20,
+  Rank.advisor: 80,
+  Rank.elephant: 60,
   Rank.chariot: 50,
   Rank.horse: 40,
   Rank.cannon: 45,

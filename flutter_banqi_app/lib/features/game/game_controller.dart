@@ -45,6 +45,7 @@ class GameController extends ChangeNotifier {
     int drawNoProgressLimit = 50,
     int aiMoveDelayMs = 500,
   }) : _humanSide = humanSide,
+       _preferredHumanSide = humanSide,
        _depth = depth,
        _longChaseLimit = longChaseLimit,
        _drawNoProgressLimit = drawNoProgressLimit,
@@ -70,6 +71,7 @@ class GameController extends ChangeNotifier {
   _PendingStrategyResult? _pendingStrategyResult;
 
   Side _humanSide;
+  Side _preferredHumanSide;
   int _depth;
   int _longChaseLimit;
   int _drawNoProgressLimit;
@@ -112,6 +114,7 @@ class GameController extends ChangeNotifier {
     int? aiMoveDelayMs,
   }) {
     _depth = depth;
+    _preferredHumanSide = humanSide;
     _humanSide = humanSide;
     _longChaseLimit = longChaseLimit;
     _drawNoProgressLimit = drawNoProgressLimit;
@@ -177,7 +180,7 @@ class GameController extends ChangeNotifier {
       return;
     }
     final terminal = board.gameOver();
-    if (terminal.$1 || board.currentTurn != _humanSide) {
+    if (terminal.$1 || (_sideLocked && board.currentTurn != _humanSide)) {
       return;
     }
 
@@ -331,6 +334,7 @@ class GameController extends ChangeNotifier {
       seed: seed,
       evaluationWeights: _learning.currentWeights,
     );
+    _humanSide = _preferredHumanSide;
     selected = null;
     lastMove = null;
     _moveAnimTick = 0;
