@@ -6,6 +6,37 @@ import 'package:flutter_banqi_app/core/engine/board_state.dart';
 import 'package:flutter_banqi_app/core/engine/types.dart';
 
 void main() {
+  double avgNearestEnemyDistance(BoardState board, Side side) {
+    final myPieces = <Position>[];
+    final enemyPieces = <Position>[];
+    for (final pos in board.positions) {
+      final p = board.cell(pos).piece;
+      if (p == null) {
+        continue;
+      }
+      if (p.side == side) {
+        myPieces.add(pos);
+      } else {
+        enemyPieces.add(pos);
+      }
+    }
+    if (myPieces.isEmpty || enemyPieces.isEmpty) {
+      return 0.0;
+    }
+    var sum = 0.0;
+    for (final mine in myPieces) {
+      var nearest = 999;
+      for (final enemy in enemyPieces) {
+        final d = (mine.row - enemy.row).abs() + (mine.col - enemy.col).abs();
+        if (d < nearest) {
+          nearest = d;
+        }
+      }
+      sum += nearest.toDouble();
+    }
+    return sum / myPieces.length;
+  }
+
   void clearBoard(BoardState board) {
     for (var r = 0; r < BoardState.rows; r++) {
       for (var c = 0; c < BoardState.cols; c++) {
@@ -142,5 +173,82 @@ void main() {
     final ai = MinimaxAI(depth: 2, seed: 42, preferCaptureOverFlip: false);
     final move = ai.chooseMove(board);
     expect(move.kind, MoveKind.move);
+  });
+
+  test('endgame hunt mode prefers closing distance when no capture exists', () {
+    final board = BoardState.initial(seed: 11)..forbidRepetition = false;
+    clearBoard(board);
+    board.currentTurn = Side.red;
+
+    board.grid[0][0] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.horse),
+    );
+    board.grid[3][0] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.soldier),
+    );
+    board.grid[1][4] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.chariot),
+    );
+
+    final before = avgNearestEnemyDistance(board, Side.red);
+    final ai = MinimaxAI(depth: 2, seed: 42, preferCaptureOverFlip: false);
+    final move = ai.chooseMove(board);
+    expect(move.kind, MoveKind.move);
+    board.applyMove(move);
+    final after = avgNearestEnemyDistance(board, Side.red);
+    expect(after, lessThan(before));
+  });
+
+  test('supported core piece does not force flee when ally can counter-capture', () {
+    final board = BoardState.initial(seed: 12)..forbidRepetition = false;
+    clearBoard(board);
+    board.currentTurn = Side.red;
+
+    board.grid[1][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.general),
+    );
+    // Adjacent guard so core piece is not considered isolated.
+    board.grid[2][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.soldier),
+    );
+    // Attacker threatening the general.
+    board.grid[0][1] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+    // Ally counter-capture option.
+    board.grid[0][2] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.chariot),
+    );
+
+    final ai = MinimaxAI(depth: 2, seed: 42, preferCaptureOverFlip: true);
+    final move = ai.chooseMove(board);
+    // Ally captures attacker instead of forcing the core piece to keep fleeing.
+    expect(move, const BanqiMove.move(Position(0, 2), Position(0, 1)));
+  });
+
+  test('threatened core prefers safe counter-capture over plain retreat', () {
+    final board = BoardState.initial(seed: 13)..forbidRepetition = false;
+    clearBoard(board);
+    board.currentTurn = Side.red;
+
+    board.grid[1][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.advisor),
+    );
+    // Attacker threatening advisor.
+    board.grid[1][2] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+    // Adjacent ally support to avoid hard forced-flee path.
+    board.grid[2][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.soldier),
+    );
+    // Keep capture destination safe after counter-capture.
+    board.grid[0][2] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.chariot),
+    );
+
+    final ai = MinimaxAI(depth: 2, seed: 42, preferCaptureOverFlip: false);
+    final move = ai.chooseMove(board);
+    expect(move, const BanqiMove.move(Position(1, 1), Position(1, 2)));
   });
 }

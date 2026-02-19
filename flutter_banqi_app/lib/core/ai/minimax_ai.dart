@@ -163,13 +163,16 @@ class MinimaxAI implements BaseAI {
         .where((m) => !_isImmediateRecaptureTrap(board, m, perspective))
         .toList();
     var candidates = safePreferred.isNotEmpty ? safePreferred : ordered;
-    final hardEscapeMoves = _orderMoves(board, allLegal)
-        .where((m) => _isHardEscapeForThreatenedCorePiece(board, m, perspective))
-        .take(maxBranching)
-        .toList();
-    if (hardEscapeMoves.isNotEmpty) {
-      final forcedEscapes = candidates.where((m) => hardEscapeMoves.contains(m)).toList();
-      candidates = forcedEscapes.isNotEmpty ? forcedEscapes : hardEscapeMoves;
+    final mustHardEscape = _mustForceHardEscape(board, perspective);
+    if (mustHardEscape) {
+      final hardEscapeMoves = _orderMoves(board, allLegal)
+          .where((m) => _isHardEscapeForThreatenedCorePiece(board, m, perspective))
+          .take(maxBranching)
+          .toList();
+      if (hardEscapeMoves.isNotEmpty) {
+        final forcedEscapes = candidates.where((m) => hardEscapeMoves.contains(m)).toList();
+        candidates = forcedEscapes.isNotEmpty ? forcedEscapes : hardEscapeMoves;
+      }
     }
     var bestScore = double.negativeInfinity;
     var bestBonus = double.negativeInfinity;
@@ -189,15 +192,19 @@ class MinimaxAI implements BaseAI {
       final see = _seeForCurrentTurnCapture(board, move);
       final preservePenalty = _corePieceMovePenalty(board, move, perspective);
       final escapeBias = _threatEscapeBias(board, move, perspective);
+      final counterEscapeBias = _counterattackEscapeBias(board, move, perspective);
       final bonus = _immediateBonus(board, move);
       final chaseBias = _endgameChaseMoveBias(board, move, perspective);
+      final huntBias = _surroundHuntBias(board, move, perspective);
       final moveScore =
           value +
           risk +
           (0.20 * see) +
           escapeBias +
+          counterEscapeBias +
           (0.25 * bonus) +
-          chaseBias -
+          chaseBias +
+          huntBias -
           preservePenalty;
       if (moveScore > bestScore || (moveScore == bestScore && bonus > bestBonus)) {
         bestScore = moveScore;
@@ -658,6 +665,40 @@ class MinimaxAI implements BaseAI {
     return bias;
   }
 
+  double _counterattackEscapeBias(BoardState board, BanqiMove move, Side perspective) {
+    if (move.kind != MoveKind.move || move.from == null) {
+      return 0.0;
+    }
+    final moving = board.cell(move.from!).piece;
+    final captured = board.cell(move.to).piece;
+    if (moving == null || moving.side != perspective || captured == null) {
+      return 0.0;
+    }
+
+    final enemy = perspective.opponent;
+    final beforeThreat = _attackersTo(board, move.from!, enemy) - _attackersTo(board, move.from!, perspective);
+    if (beforeThreat <= 0) {
+      return 0.0;
+    }
+
+    final child = board.clone()..forbidRepetition = false;
+    child.applyMove(move);
+    final afterThreat = _attackersTo(child, move.to, enemy) - _attackersTo(child, move.to, perspective);
+    if (afterThreat > 0) {
+      return 0.0;
+    }
+
+    final see = _seeForCurrentTurnCapture(board, move);
+    if (see < 0) {
+      return 0.0;
+    }
+
+    // Prefer counter-capture over pure retreat when both resolve immediate danger.
+    final capturedValue = captured.value.toDouble();
+    final moverValue = moving.value.toDouble();
+    return 0.22 * capturedValue + 0.08 * moverValue + 0.10 * see;
+  }
+
   int _attackersTo(BoardState board, Position target, Side attacker) {
     final state = board.clone()
       ..forbidRepetition = false
@@ -772,6 +813,59 @@ class MinimaxAI implements BaseAI {
     return bias;
   }
 
+  double _surroundHuntBias(BoardState board, BanqiMove move, Side perspective) {
+    final hiddenPieces = _hiddenPieceCount(board);
+    final revealedPieces = _revealedPieceCount(board);
+    final huntPhase = hiddenPieces <= 6 || revealedPieces <= 10;
+    if (!huntPhase) {
+      return 0.0;
+    }
+
+    final enemyPieces = _positionsOfSide(board, perspective.opponent);
+    if (enemyPieces.isEmpty) {
+      return 0.0;
+    }
+
+    final target = _pickHuntTarget(board, enemyPieces, perspective);
+    if (target == null) {
+      return 0.0;
+    }
+
+    // During hunt phase, favor movement over flipping when movement exists.
+    if (move.kind != MoveKind.move || move.from == null) {
+      final hasMoveNow = board.legalMoves().any((m) => m.kind == MoveKind.move);
+      return hasMoveNow ? -1.1 : 0.0;
+    }
+
+    final beforeClosest = _closestAllyDistanceToTarget(board, perspective, target);
+    final beforeAdj = _adjacentAlliesToTarget(board, perspective, target);
+    final beforeEscape = _targetEscapeSquares(board, target, perspective);
+    final beforeCenterEscape = _targetCenterEscapeScore(board, target, perspective);
+
+    final child = board.clone()..forbidRepetition = false;
+    child.applyMove(move);
+    final afterClosest = _closestAllyDistanceToTarget(child, perspective, target);
+    final afterAdj = _adjacentAlliesToTarget(child, perspective, target);
+    final afterEscape = _targetEscapeSquares(child, target, perspective);
+    final afterCenterEscape = _targetCenterEscapeScore(child, target, perspective);
+
+    final closeDelta = (beforeClosest - afterClosest).toDouble();
+    final adjDelta = (afterAdj - beforeAdj).toDouble();
+    final escapeDelta = (beforeEscape - afterEscape).toDouble();
+    final cornerDelta = beforeCenterEscape - afterCenterEscape;
+    final staleRatio = board.noProgressPlies / max(1, board.drawNoProgressLimit);
+    final urgency = 1.0 + 1.5 * staleRatio;
+
+    var bias = (2.1 * closeDelta + 2.6 * adjDelta + 1.8 * escapeDelta + 1.4 * cornerDelta) * urgency;
+
+    // Extra reward for building a two-piece net around target.
+    if (afterAdj >= 2 && afterAdj > beforeAdj) {
+      bias += 1.8 * urgency;
+    }
+
+    return bias;
+  }
+
   double _averageNearestEnemyDistance(BoardState board, Side side) {
     final myPieces = <Position>[];
     final enemyPieces = <Position>[];
@@ -802,6 +896,129 @@ class MinimaxAI implements BaseAI {
       sum += nearest.toDouble();
     }
     return sum / myPieces.length;
+  }
+
+  List<Position> _positionsOfSide(BoardState board, Side side) {
+    final positions = <Position>[];
+    for (final pos in board.positions) {
+      final p = board.cell(pos).piece;
+      if (p != null && p.side == side) {
+        positions.add(pos);
+      }
+    }
+    return positions;
+  }
+
+  Position? _pickHuntTarget(BoardState board, List<Position> enemies, Side hunter) {
+    Position? best;
+    var bestScore = -1e9;
+    for (final pos in enemies) {
+      final p = board.cell(pos).piece;
+      if (p == null) {
+        continue;
+      }
+      final dist = _closestAllyDistanceToTarget(board, hunter, pos);
+      final score = (0.08 * p.value) - dist;
+      if (score > bestScore) {
+        bestScore = score;
+        best = pos;
+      }
+    }
+    return best;
+  }
+
+  int _closestAllyDistanceToTarget(BoardState board, Side side, Position target) {
+    var nearest = 999;
+    for (final pos in board.positions) {
+      final p = board.cell(pos).piece;
+      if (p == null || p.side != side) {
+        continue;
+      }
+      final d = (pos.row - target.row).abs() + (pos.col - target.col).abs();
+      if (d < nearest) {
+        nearest = d;
+      }
+    }
+    return nearest == 999 ? 0 : nearest;
+  }
+
+  int _adjacentAlliesToTarget(BoardState board, Side side, Position target) {
+    const dirs = <List<int>>[
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ];
+    var count = 0;
+    for (final d in dirs) {
+      final nr = target.row + d[0];
+      final nc = target.col + d[1];
+      if (nr < 0 || nr >= BoardState.rows || nc < 0 || nc >= BoardState.cols) {
+        continue;
+      }
+      final p = board.cell(Position(nr, nc)).piece;
+      if (p != null && p.side == side) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  int _targetEscapeSquares(BoardState board, Position target, Side hunter) {
+    const dirs = <List<int>>[
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ];
+    var count = 0;
+    final hunterAttackMap = _attackMap(board, hunter);
+    for (final d in dirs) {
+      final nr = target.row + d[0];
+      final nc = target.col + d[1];
+      if (nr < 0 || nr >= BoardState.rows || nc < 0 || nc >= BoardState.cols) {
+        continue;
+      }
+      final pos = Position(nr, nc);
+      final cell = board.cell(pos);
+      if (!cell.isEmpty) {
+        continue;
+      }
+      if (hunterAttackMap.contains(pos)) {
+        continue;
+      }
+      count += 1;
+    }
+    return count;
+  }
+
+  double _targetCenterEscapeScore(BoardState board, Position target, Side hunter) {
+    const dirs = <List<int>>[
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ];
+    final hunterAttackMap = _attackMap(board, hunter);
+    final centerRow = (BoardState.rows - 1) / 2.0;
+    final centerCol = (BoardState.cols - 1) / 2.0;
+    var score = 0.0;
+    for (final d in dirs) {
+      final nr = target.row + d[0];
+      final nc = target.col + d[1];
+      if (nr < 0 || nr >= BoardState.rows || nc < 0 || nc >= BoardState.cols) {
+        continue;
+      }
+      final pos = Position(nr, nc);
+      final cell = board.cell(pos);
+      if (!cell.isEmpty || hunterAttackMap.contains(pos)) {
+        continue;
+      }
+      // Escapes toward center are more dangerous; reducing these means better corner trap.
+      final centerDist = (nr - centerRow).abs() + (nc - centerCol).abs();
+      score += (5.0 - centerDist).clamp(0.0, 5.0);
+    }
+    return score;
   }
 
   double _corePieceSafety(BoardState board, Side perspective) {
@@ -870,6 +1087,32 @@ class MinimaxAI implements BaseAI {
     final afterThreat =
         _attackersTo(child, move.to, enemy) - _attackersTo(child, move.to, perspective);
     return afterThreat <= 0;
+  }
+
+  bool _mustForceHardEscape(BoardState board, Side perspective) {
+    // Only force "must-escape" when core piece is truly isolated and under clear net threat.
+    for (final pos in board.positions) {
+      final p = board.cell(pos).piece;
+      if (p == null || p.side != perspective) {
+        continue;
+      }
+      if (p.rank != Rank.general && p.rank != Rank.advisor) {
+        continue;
+      }
+      final enemyThreats = _attackersTo(board, pos, perspective.opponent);
+      if (enemyThreats <= 0) {
+        continue;
+      }
+      final allyDefenders = _attackersTo(board, pos, perspective);
+      final adjacentAllies = _adjacentCount(board, pos, perspective);
+      final netThreat = enemyThreats - allyDefenders;
+      // If nearby allies can cover or counterattack, do not force pure fleeing.
+      final hasNearbySupport = adjacentAllies >= 1 || allyDefenders >= enemyThreats;
+      if (netThreat > 0 && !hasNearbySupport) {
+        return true;
+      }
+    }
+    return false;
   }
 
   double _flipPressure(BoardState board, Side side) {
