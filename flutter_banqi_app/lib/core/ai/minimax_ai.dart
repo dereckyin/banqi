@@ -148,6 +148,12 @@ class MinimaxAI implements BaseAI {
     }
 
     final hasCapture = allLegal.any((m) => _isCaptureMove(board, m));
+    final strategicPlan = _scanStrategicPlan(
+      board,
+      perspective,
+      legal: legal,
+      allLegal: allLegal,
+    );
     final hiddenPieces = _hiddenPieceCount(board);
     var baseDepth = hasCapture ? max(depth, 3) : depth;
     if (hiddenPieces <= 8) {
@@ -196,6 +202,10 @@ class MinimaxAI implements BaseAI {
       final bonus = _immediateBonus(board, move);
       final chaseBias = _endgameChaseMoveBias(board, move, perspective);
       final huntBias = _surroundHuntBias(board, move, perspective);
+      final targetPriorityBias = _targetPriorityBonus(board, move, perspective);
+      final soldierSacrificePenalty = _soldierSacrificePenalty(board, move, perspective);
+      final strategicBias = _strategicGoalBias(board, move, perspective, strategicPlan);
+      final aimlessPenalty = _aimlessLoopPenalty(board, move, perspective, strategicPlan);
       final moveScore =
           value +
           risk +
@@ -204,8 +214,12 @@ class MinimaxAI implements BaseAI {
           counterEscapeBias +
           (0.25 * bonus) +
           chaseBias +
-          huntBias -
-          preservePenalty;
+          huntBias +
+          targetPriorityBias -
+          preservePenalty -
+          soldierSacrificePenalty +
+          strategicBias -
+          aimlessPenalty;
       if (moveScore > bestScore || (moveScore == bestScore && bonus > bestBonus)) {
         bestScore = moveScore;
         bestBonus = bonus;
@@ -663,6 +677,63 @@ class MinimaxAI implements BaseAI {
     }
 
     return bias;
+  }
+
+  double _targetPriorityBonus(BoardState board, BanqiMove move, Side perspective) {
+    if (move.kind != MoveKind.move || move.from == null) {
+      return 0.0;
+    }
+    final moving = board.cell(move.from!).piece;
+    final target = board.cell(move.to).piece;
+    if (moving == null || moving.side != perspective || target == null || target.side == perspective) {
+      return 0.0;
+    }
+    final see = _seeForCurrentTurnCapture(board, move);
+    // Don't over-reward clearly bad exchanges.
+    final seeFactor = see >= 0 ? 1.0 : 0.45;
+    switch (target.rank) {
+      case Rank.general:
+        return 18.0 * seeFactor;
+      case Rank.advisor:
+        return 11.0 * seeFactor;
+      case Rank.cannon:
+        return 8.5 * seeFactor;
+      default:
+        return 0.0;
+    }
+  }
+
+  double _soldierSacrificePenalty(BoardState board, BanqiMove move, Side perspective) {
+    if (move.kind != MoveKind.move || move.from == null) {
+      return 0.0;
+    }
+    final moving = board.cell(move.from!).piece;
+    if (moving == null || moving.side != perspective || moving.rank != Rank.soldier) {
+      return 0.0;
+    }
+    final enemyGeneralAlive = board.positions.any((pos) {
+      final p = board.cell(pos).piece;
+      return p != null && p.side == perspective.opponent && p.rank == Rank.general;
+    });
+    if (!enemyGeneralAlive) {
+      return 0.0;
+    }
+
+    final child = board.clone()..forbidRepetition = false;
+    child.applyMove(move);
+    final enemyThreats = _attackersTo(child, move.to, perspective.opponent);
+    if (enemyThreats <= 0) {
+      return 0.0;
+    }
+    final allyDefenders = _attackersTo(child, move.to, perspective);
+    final netThreat = max(1, enemyThreats - allyDefenders);
+    final see = _seeForCurrentTurnCapture(board, move);
+    final capturedValue = board.cell(move.to).piece?.value.toDouble() ?? 0.0;
+    // Stronger anti-sacrifice before enemy general is eliminated.
+    final basePenalty = 6.2 * netThreat + 2.2 * enemyThreats;
+    final tradeRelief = max(0.0, capturedValue - moving.value) * 0.2;
+    final seeRelief = see > 0 ? 0.12 * see : 0.0;
+    return max(0.0, basePenalty - tradeRelief - seeRelief);
   }
 
   double _counterattackEscapeBias(BoardState board, BanqiMove move, Side perspective) {
@@ -1264,4 +1335,177 @@ class MinimaxAI implements BaseAI {
     }
     return bestMove;
   }
+
+  _StrategicPlan _scanStrategicPlan(
+    BoardState board,
+    Side perspective, {
+    required List<BanqiMove> legal,
+    required List<BanqiMove> allLegal,
+  }) {
+    final hiddenPieces = _hiddenPieceCount(board);
+    final staleRatio = board.noProgressPlies / max(1, board.drawNoProgressLimit);
+    final captures = legal.where((m) => _isCaptureMove(board, m)).toList();
+    final allMoves = allLegal.where((m) => m.kind == MoveKind.move).toList();
+    final coreThreatened = _isCoreUnderThreat(board, perspective);
+
+    BanqiMove? bestHighValueCapture;
+    var bestTargetValue = -1.0;
+    for (final move in captures) {
+      final target = board.cell(move.to).piece;
+      if (target == null) {
+        continue;
+      }
+      final targetValue = target.value.toDouble();
+      if (targetValue > bestTargetValue) {
+        bestTargetValue = targetValue;
+        bestHighValueCapture = move;
+      }
+    }
+
+    if (coreThreatened) {
+      return const _StrategicPlan(goal: _StrategicGoal.defendCore);
+    }
+    if (bestHighValueCapture != null &&
+        bestTargetValue >= rankValue[Rank.cannon]!.toDouble()) {
+      return _StrategicPlan(
+        goal: _StrategicGoal.tacticalCapture,
+        focusTarget: bestHighValueCapture.to,
+      );
+    }
+    if (hiddenPieces > 10 && captures.isEmpty) {
+      return const _StrategicPlan(goal: _StrategicGoal.revealAndDevelop);
+    }
+    if (hiddenPieces <= 6 || staleRatio >= 0.55) {
+      final enemies = _positionsOfSide(board, perspective.opponent);
+      return _StrategicPlan(
+        goal: staleRatio >= 0.55
+            ? _StrategicGoal.breakStalemate
+            : _StrategicGoal.surroundAndFinish,
+        focusTarget: _pickHuntTarget(board, enemies, perspective),
+      );
+    }
+    if (allMoves.isNotEmpty) {
+      return const _StrategicPlan(goal: _StrategicGoal.improvePosition);
+    }
+    return const _StrategicPlan(goal: _StrategicGoal.revealAndDevelop);
+  }
+
+  double _strategicGoalBias(
+    BoardState board,
+    BanqiMove move,
+    Side perspective,
+    _StrategicPlan plan,
+  ) {
+    switch (plan.goal) {
+      case _StrategicGoal.defendCore:
+        return _threatEscapeBias(board, move, perspective) * 0.45;
+      case _StrategicGoal.tacticalCapture:
+        if (_isCaptureMove(board, move)) {
+          final target = board.cell(move.to).piece;
+          final v = target?.value.toDouble() ?? 0.0;
+          return 0.16 * v;
+        }
+        return _distanceTowardFocusBias(board, move, perspective, plan.focusTarget, scale: 1.2);
+      case _StrategicGoal.revealAndDevelop:
+        if (move.kind == MoveKind.flip) {
+          return 0.8;
+        }
+        return _distanceTowardFocusBias(board, move, perspective, plan.focusTarget, scale: 0.8);
+      case _StrategicGoal.surroundAndFinish:
+        return _distanceTowardFocusBias(board, move, perspective, plan.focusTarget, scale: 1.8);
+      case _StrategicGoal.breakStalemate:
+        return _distanceTowardFocusBias(board, move, perspective, plan.focusTarget, scale: 2.1);
+      case _StrategicGoal.improvePosition:
+        return _distanceTowardFocusBias(board, move, perspective, plan.focusTarget, scale: 0.9);
+    }
+  }
+
+  double _aimlessLoopPenalty(
+    BoardState board,
+    BanqiMove move,
+    Side perspective,
+    _StrategicPlan plan,
+  ) {
+    final hasPieceMove = board.legalMoves().any((m) => m.kind == MoveKind.move);
+    final staleRatio = board.noProgressPlies / max(1, board.drawNoProgressLimit);
+    if (move.kind == MoveKind.flip && hasPieceMove && plan.goal != _StrategicGoal.revealAndDevelop) {
+      return 1.1 + 2.0 * staleRatio;
+    }
+    if (move.kind != MoveKind.move || move.from == null) {
+      return 0.0;
+    }
+
+    final child = board.clone()..forbidRepetition = false;
+    child.applyMove(move);
+    final beforeDist = _averageNearestEnemyDistance(board, perspective);
+    final afterDist = _averageNearestEnemyDistance(child, perspective);
+    final beforeCap = _captureOptions(board, perspective);
+    final afterCap = _captureOptions(child, perspective);
+    final beforeSafety = _safety(board, perspective);
+    final afterSafety = _safety(child, perspective);
+
+    final noProgressMove =
+        !_isCaptureMove(board, move) &&
+        afterDist >= beforeDist &&
+        afterCap <= beforeCap &&
+        afterSafety <= beforeSafety + 0.05;
+    if (!noProgressMove) {
+      return 0.0;
+    }
+    return 0.9 + 2.6 * staleRatio;
+  }
+
+  bool _isCoreUnderThreat(BoardState board, Side side) {
+    for (final pos in board.positions) {
+      final p = board.cell(pos).piece;
+      if (p == null || p.side != side) {
+        continue;
+      }
+      if (p.rank != Rank.general && p.rank != Rank.advisor) {
+        continue;
+      }
+      final enemyThreats = _attackersTo(board, pos, side.opponent);
+      final allyDefenders = _attackersTo(board, pos, side);
+      if (enemyThreats - allyDefenders > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  double _distanceTowardFocusBias(
+    BoardState board,
+    BanqiMove move,
+    Side perspective,
+    Position? focusTarget, {
+    required double scale,
+  }) {
+    if (focusTarget == null || move.kind != MoveKind.move || move.from == null) {
+      return 0.0;
+    }
+    final moving = board.cell(move.from!).piece;
+    if (moving == null || moving.side != perspective) {
+      return 0.0;
+    }
+    final before =
+        (move.from!.row - focusTarget.row).abs() + (move.from!.col - focusTarget.col).abs();
+    final after = (move.to.row - focusTarget.row).abs() + (move.to.col - focusTarget.col).abs();
+    return (before - after) * scale;
+  }
+}
+
+enum _StrategicGoal {
+  defendCore,
+  tacticalCapture,
+  revealAndDevelop,
+  surroundAndFinish,
+  breakStalemate,
+  improvePosition,
+}
+
+class _StrategicPlan {
+  const _StrategicPlan({required this.goal, this.focusTarget});
+
+  final _StrategicGoal goal;
+  final Position? focusTarget;
 }
