@@ -13,6 +13,7 @@ class BoardScreen extends StatefulWidget {
 
 class _BoardScreenState extends State<BoardScreen> {
   late GameController controller;
+  bool _dismissEndgameOverlay = false;
 
   @override
   void initState() {
@@ -37,6 +38,16 @@ class _BoardScreenState extends State<BoardScreen> {
       animation: controller,
       builder: (context, _) {
         final terminal = controller.board.gameOver();
+        if (!terminal.$1 && _dismissEndgameOverlay) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _dismissEndgameOverlay = false;
+            });
+          });
+        }
         return Scaffold(
           body: Stack(
             children: [
@@ -70,7 +81,8 @@ class _BoardScreenState extends State<BoardScreen> {
                   ),
                 ),
               ),
-              if (terminal.$1 && !controller.spectatorMode) _endgameOverlay(terminal),
+              if (terminal.$1 && !controller.spectatorMode && !_dismissEndgameOverlay)
+                _endgameOverlay(terminal),
             ],
           ),
         );
@@ -475,66 +487,78 @@ class _BoardScreenState extends State<BoardScreen> {
   Widget _endgameOverlay((bool, Side?, bool) terminal) {
     final text = terminal.$3 ? '和局' : (terminal.$2 == Side.red ? '紅方勝利' : '黑方勝利');
     return Positioned.fill(
-      child: AnimatedOpacity(
-        opacity: 1,
-        duration: const Duration(milliseconds: 220),
-        child: Container(
-          color: const Color(0x99000000),
-          alignment: Alignment.center,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          setState(() {
+            _dismissEndgameOverlay = true;
+          });
+        },
+        child: AnimatedOpacity(
+          opacity: 1,
+          duration: const Duration(milliseconds: 220),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
-            decoration: BoxDecoration(
-              color: const Color(0xEDEBDCC7),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFF8A6334), width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Color(0x66000000),
-                  blurRadius: 16,
-                  offset: Offset(0, 6),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  '對局結束',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  text,
-                  style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w900,
-                    color: terminal.$3
-                        ? const Color(0xFF6A4A1D)
-                        : (terminal.$2 == Side.red
-                              ? const Color(0xFFB01212)
-                              : const Color(0xFF1C326E)),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: controller.restart,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('再來一局'),
-                    ),
-                    const SizedBox(width: 10),
-                    FilledButton.tonalIcon(
-                      onPressed: () async {
-                        await controller.watchOneAiVsAiGame();
-                      },
-                      icon: const Icon(Icons.visibility),
-                      label: const Text('AI 對戰'),
+            color: const Color(0x99000000),
+            alignment: Alignment.center,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {},
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
+                decoration: BoxDecoration(
+                  color: const Color(0xEDEBDCC7),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFF8A6334), width: 2),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x66000000),
+                      blurRadius: 16,
+                      offset: Offset(0, 6),
                     ),
                   ],
                 ),
-              ],
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      '對局結束',
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      text,
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w900,
+                        color: terminal.$3
+                            ? const Color(0xFF6A4A1D)
+                            : (terminal.$2 == Side.red
+                                  ? const Color(0xFFB01212)
+                                  : const Color(0xFF1C326E)),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        FilledButton.icon(
+                          onPressed: controller.restart,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('再來一局'),
+                        ),
+                        const SizedBox(width: 10),
+                        FilledButton.tonalIcon(
+                          onPressed: () async {
+                            await controller.watchOneAiVsAiGame();
+                          },
+                          icon: const Icon(Icons.visibility),
+                          label: const Text('AI 對戰'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),

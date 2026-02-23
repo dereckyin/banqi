@@ -206,6 +206,7 @@ class MinimaxAI implements BaseAI {
       final soldierSacrificePenalty = _soldierSacrificePenalty(board, move, perspective);
       final strategicBias = _strategicGoalBias(board, move, perspective, strategicPlan);
       final aimlessPenalty = _aimlessLoopPenalty(board, move, perspective, strategicPlan);
+      final forcingBias = _forcingPressureBias(board, move, perspective);
       final moveScore =
           value +
           risk +
@@ -219,7 +220,8 @@ class MinimaxAI implements BaseAI {
           preservePenalty -
           soldierSacrificePenalty +
           strategicBias -
-          aimlessPenalty;
+          aimlessPenalty +
+          forcingBias;
       if (moveScore > bestScore || (moveScore == bestScore && bonus > bestBonus)) {
         bestScore = moveScore;
         bestBonus = bonus;
@@ -1455,6 +1457,42 @@ class MinimaxAI implements BaseAI {
     return 0.9 + 2.6 * staleRatio;
   }
 
+  double _forcingPressureBias(BoardState board, BanqiMove move, Side perspective) {
+    final hiddenPieces = _hiddenPieceCount(board);
+    final staleRatio = board.noProgressPlies / max(1, board.drawNoProgressLimit);
+    final forcingPhase = hiddenPieces <= 6 || staleRatio >= 0.35;
+    if (!forcingPhase || move.kind != MoveKind.move || move.from == null) {
+      return 0.0;
+    }
+
+    final beforeOppMoves = _legalMoveCountForSide(board, perspective.opponent);
+    final beforeThreats = _captureMoveCountForSide(board, perspective);
+
+    final child = board.clone()..forbidRepetition = false;
+    child.applyMove(move);
+    final afterOppMoves = child.legalMoves().length; // opponent to move after applyMove.
+    final afterThreats = _captureMoveCountForSide(child, perspective);
+
+    final oppReduction = (beforeOppMoves - afterOppMoves).toDouble();
+    final threatGain = (afterThreats - beforeThreats).toDouble();
+    var bias = 1.25 * oppReduction + 1.05 * threatGain;
+
+    // Bonus for forcing the opponent into narrow choices.
+    if (afterOppMoves <= 3) {
+      bias += 1.6;
+    } else if (afterOppMoves <= 5) {
+      bias += 0.8;
+    }
+
+    // Penalize moves that loosen pressure in forcing phase.
+    if (oppReduction < 0 && threatGain <= 0) {
+      bias += 1.4 * oppReduction;
+    }
+
+    final urgency = 1.0 + 1.3 * staleRatio;
+    return bias * urgency;
+  }
+
   bool _isCoreUnderThreat(BoardState board, Side side) {
     for (final pos in board.positions) {
       final p = board.cell(pos).piece;
@@ -1471,6 +1509,26 @@ class MinimaxAI implements BaseAI {
       }
     }
     return false;
+  }
+
+  int _legalMoveCountForSide(BoardState board, Side side) {
+    final state = board.clone()
+      ..forbidRepetition = false
+      ..currentTurn = side;
+    return state.legalMoves().length;
+  }
+
+  int _captureMoveCountForSide(BoardState board, Side side) {
+    final state = board.clone()
+      ..forbidRepetition = false
+      ..currentTurn = side;
+    var count = 0;
+    for (final m in state.legalMoves()) {
+      if (_isCaptureMove(state, m)) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   double _distanceTowardFocusBias(
