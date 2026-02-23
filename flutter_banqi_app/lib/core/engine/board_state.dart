@@ -143,6 +143,45 @@ class BoardState {
     return pseudo.where((m) => !_wouldRepeatPosition(m)).toList();
   }
 
+  String? illegalReason(BanqiMove move) {
+    final legal = legalMoves();
+    if (legal.contains(move)) {
+      return null;
+    }
+
+    if (move.kind == MoveKind.move &&
+        legal.isNotEmpty &&
+        legal.every((m) => m.kind == MoveKind.flip)) {
+      return '此時僅可翻牌';
+    }
+
+    final pseudo = _pseudoLegalMoves();
+    if (!pseudo.contains(move)) {
+      if (move.kind == MoveKind.flip && !cell(move.to).isHidden) {
+        return '該位置不可翻牌';
+      }
+      if (move.kind == MoveKind.move && move.from != null) {
+        final source = cell(move.from!).piece;
+        if (source == null) {
+          return '起點沒有可移動的棋子';
+        }
+        if (source.side != currentTurn) {
+          return '請選擇目前輪到的一方棋子';
+        }
+      }
+      return '不符合棋子規則';
+    }
+
+    if (forbidRepetition && _wouldRepeatPosition(move)) {
+      if (repetitionPolicy == 'long_chase_only') {
+        return '違反長追限制';
+      }
+      return '違反重複局面限制';
+    }
+
+    return '不符合棋子規則';
+  }
+
   List<BanqiMove> _pseudoLegalMoves() {
     final moves = <BanqiMove>[];
     for (final pos in positions) {
@@ -221,11 +260,15 @@ class BoardState {
     final raw = _applyMoveNoValidation(move);
 
     if (move.kind == MoveKind.move && raw.capturedPiece == null) {
-      final currentTargets = _computeChaseTargets(mover);
-      // Robust long-chase tracking: any consecutive non-capture move that still
-      // keeps attack pressure counts toward chase streak.
+      final currentTargets = _captureTargetsFrom(move.to, mover);
+      final previousTargets = lastNonCaptureChaseTargets[mover] ?? <Position>{};
       if (currentTargets.isNotEmpty) {
-        longChaseStreak[mover] = (longChaseStreak[mover] ?? 0) + 1;
+        final continuingChase =
+            previousTargets.isEmpty ||
+            currentTargets.any((p) => previousTargets.contains(p));
+        longChaseStreak[mover] = continuingChase
+            ? (longChaseStreak[mover] ?? 0) + 1
+            : 1;
       } else {
         longChaseStreak[mover] = 0;
       }
@@ -376,11 +419,17 @@ class BoardState {
 
     if (repetitionPolicy == 'long_chase_only') {
       if (move.kind == MoveKind.move && raw.capturedPiece == null) {
-        final currentTargets = trial._computeChaseTargets(mover);
+        final currentTargets = trial._captureTargetsFrom(move.to, mover);
+        final previousTargets = lastNonCaptureChaseTargets[mover] ?? <Position>{};
         if (currentTargets.isNotEmpty) {
-          final nextStreak = (longChaseStreak[mover] ?? 0) + 1;
+          final continuingChase =
+              previousTargets.isEmpty ||
+              currentTargets.any((p) => previousTargets.contains(p));
+          final nextStreak = continuingChase
+              ? (longChaseStreak[mover] ?? 0) + 1
+              : 1;
           // Block as soon as streak reaches configured limit.
-          if (nextStreak >= longChaseLimit) {
+          if (continuingChase && nextStreak >= longChaseLimit) {
             return true;
           }
         }
@@ -398,15 +447,17 @@ class BoardState {
     return true;
   }
 
-  Set<Position> _computeChaseTargets(Side attackerSide) {
-    final trial = clone()..forbidRepetition = false;
-    trial.currentTurn = attackerSide;
+  Set<Position> _captureTargetsFrom(Position from, Side attackerSide) {
+    final piece = cell(from).piece;
+    if (piece == null || piece.side != attackerSide) {
+      return <Position>{};
+    }
     final targets = <Position>{};
-    for (final move in trial._pseudoLegalMoves()) {
+    for (final move in _pieceMoves(from, piece)) {
       if (move.kind != MoveKind.move || move.from == null) {
         continue;
       }
-      final target = trial.cell(move.to).piece;
+      final target = cell(move.to).piece;
       if (target != null && target.side != attackerSide) {
         targets.add(move.to);
       }

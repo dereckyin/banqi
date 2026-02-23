@@ -278,6 +278,8 @@ class GameController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (_) {
+      status = board.illegalReason(move) ?? '非法走法';
+      notifyListeners();
       return false;
     }
   }

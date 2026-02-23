@@ -66,4 +66,34 @@ void main() {
       isFalse,
     );
   });
+
+  test('long chase ban still allows moving a different non-chasing piece', () {
+    final board = BoardState.initial(seed: 8)..forbidRepetition = true;
+    for (var r = 0; r < BoardState.rows; r++) {
+      for (var c = 0; c < BoardState.cols; c++) {
+        board.grid[r][c] = const CellState.empty();
+      }
+    }
+    board.pieceBag.clear();
+    board.currentTurn = Side.red;
+    board.grid[0][1] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.chariot),
+    );
+    board.grid[0][3] = const CellState.revealed(
+      Piece(side: Side.black, rank: Rank.soldier),
+    );
+    board.grid[3][0] = const CellState.revealed(
+      Piece(side: Side.red, rank: Rank.horse),
+    );
+
+    board.lastNonCaptureChaseTargets[Side.red] = {const Position(0, 3)};
+    board.longChaseStreak[Side.red] = board.longChaseLimit;
+
+    const chaseMove = BanqiMove.move(Position(0, 1), Position(0, 2));
+    const nonChaseMove = BanqiMove.move(Position(3, 0), Position(2, 0));
+    final legalMoves = board.legalMoves();
+    expect(legalMoves.contains(chaseMove), isFalse);
+    expect(legalMoves.contains(nonChaseMove), isTrue);
+    expect(() => board.applyMove(nonChaseMove), returnsNormally);
+  });
 }
